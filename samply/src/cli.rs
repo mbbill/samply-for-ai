@@ -209,7 +209,7 @@ pub struct DrilldownArgs {
     pub function: String,
 
     /// Maximum depth to drill down.
-    #[arg(long, default_value = "10")]
+    #[arg(long, default_value = "20")]
     pub depth: usize,
 
     /// Self-time percentage threshold to consider a function a bottleneck.

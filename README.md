@@ -18,15 +18,15 @@ samply analyze stop
 ## Recording Profiles
 
 ```bash
+# Record and start analysis server (for AI/CLI workflow)
+samply record --serve ./my-application
+# Server runs in foreground, ready for samply query commands
+
 # Basic recording (opens Firefox Profiler UI when done, pre-symbolicated by default)
 samply record ./my-application
 
 # Save without opening browser
 samply record -o profile.json --save-only ./my-application
-
-# Record and start analysis server (for AI/CLI workflow)
-samply record --serve ./my-application
-# Server runs in foreground, ready for samply query commands
 
 ```
 
@@ -70,7 +70,7 @@ samply query drilldown FUNCTION [--depth N] [--threshold PCT]
 Follows hottest callee path from FUNCTION. Stops when self-time > threshold (bottleneck found).
 
 **Options:**
-- `--depth N` - Maximum depth to drill (default: 10)
+- `--depth N` - Maximum depth to drill (default: 20)
 - `--threshold PCT` - Self-time percentage to consider a bottleneck (default: 5.0)
 
 **Threshold explained:**
