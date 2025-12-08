@@ -1,150 +1,262 @@
-# samply
+# Samply - CPU Profiler with AI CLI
 
-samply is a command line CPU profiler which uses the [Firefox profiler](https://profiler.firefox.com/) as its UI.
+A sampling CPU profiler with a CLI designed for AI-assisted performance debugging.
 
-samply works on macOS, Linux, and Windows.
+## Quick Start
 
-In order to profile the execution of `./my-application`, prepend `samply record` to the command invocation:
+```bash
+# Record a profile and start analysis server (--serve for AI/CLI workflow)
+samply record --serve ./my-application my-arguments
+# Now run queries directly (server running in foreground, Ctrl+C to stop)
 
-```sh
-samply record ./my-application my-arguments
+# OR: Traditional workflow (server runs in background)
+samply analyze serve profile.json --no-open &
+samply query drilldown main --depth 20
+samply analyze stop
 ```
 
-On Linux, samply uses perf events. You can grant temporary access by running:
+## Recording Profiles
 
-```sh
+```bash
+# Basic recording (opens Firefox Profiler UI when done, pre-symbolicated by default)
+samply record ./my-application
+
+# Save without opening browser
+samply record -o profile.json --save-only ./my-application
+
+# Record and start analysis server (for AI/CLI workflow)
+samply record --serve ./my-application
+# Server runs in foreground, ready for samply query commands
+
+```
+
+### Platform Setup
+
+**Linux** - Grant perf access:
+```bash
 echo '-1' | sudo tee /proc/sys/kernel/perf_event_paranoid
 ```
 
-On Windows, you can use `samply record -a` to record all processes. You'll usually also want to use some symbol servers, most importantly the Microsoft Symbol Server so that you can see symbols for Windows libraries. Here's a command which supports symbols for Windows, Firefox and Chrome:
-
-```
-samply record -a --windows-symbol-server https://msdl.microsoft.com/download/symbols --breakpad-symbol-server https://symbols.mozilla.org/try/ --windows-symbol-server https://chromium-browser-symsrv.commondatastorage.googleapis.com
-```
-
-## Installation
-
-You have the following options to install samply:
-
-### Install prebuilt binaries via shell script
-
-macOS/Linux:
-
-```sh
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/mstange/samply/releases/download/samply-v0.13.1/samply-installer.sh | sh
+**macOS** - Self-sign for process attachment:
+```bash
+samply setup
 ```
 
-Windows:
+## AI CLI - Performance Analysis
 
-```sh
-powershell -ExecutionPolicy Bypass -c "irm https://github.com/mstange/samply/releases/download/samply-v0.13.1/samply-installer.ps1 | iex"
+### Setup
+
+**IMPORTANT:** `samply analyze serve` runs a persistent server that does NOT exit until killed. You MUST run it in the background, otherwise your terminal will be blocked.
+
+```bash
+# Start analysis server (run in background with &)
+samply analyze serve profile.json --no-open &
+
+# Server auto-discovered via ~/.samply/session.json
+# Now run queries...
+
+# Stop when done
+samply analyze stop
 ```
 
-### Install from crates.io with cargo
+### Commands
 
-```sh
-cargo install --locked samply
+#### drilldown - Find Bottleneck (START HERE)
+
+```bash
+samply query drilldown FUNCTION [--depth N] [--threshold PCT]
 ```
 
-### Build from source
+Follows hottest callee path from FUNCTION. Stops when self-time > threshold (bottleneck found).
 
-```sh
-git clone https://github.com/mstange/samply
-cd samply
+**Options:**
+- `--depth N` - Maximum depth to drill (default: 10)
+- `--threshold PCT` - Self-time percentage to consider a bottleneck (default: 5.0)
+
+**Threshold explained:**
+- At each function, checks if `self_percent > threshold`
+- `self_percent` = % of samples where CPU is executing THIS function's code (not its callees)
+- `--threshold 5.0` - Default, catches most bottlenecks
+- `--threshold 20.0` - Only flags significant bottlenecks
+- `--threshold 50.0` - Only stops at severe bottlenecks
+
+```bash
+samply query drilldown main --depth 20
+```
+
+Output marks `is_hottest: true` at each level, `is_bottleneck: true` when found.
+
+#### hotspots - Functions by Self-Time
+
+```bash
+samply query hotspots [--limit N] [--thread NAME] [--show-lines] [--show-addresses]
+```
+
+**Options:**
+- `--limit N` - Number of functions to return (default: 20)
+- `--thread NAME` - Filter to specific thread
+- `--show-lines` - Include per-line sample counts
+- `--show-addresses` - Include per-address sample counts
+
+**Note**: Often shows stdlib (`malloc`, `memcpy`). Use `drilldown` to find YOUR bottleneck.
+
+#### callers / callees - Call Relationships
+
+```bash
+samply query callers FUNCTION [--depth N] [--limit N]
+samply query callees FUNCTION [--depth N] [--limit N]
+```
+
+**Options:**
+- `--depth N` - Maximum depth of call chain (default: 5)
+- `--limit N` - Maximum callers/callees per level (default: 20)
+
+#### asm - Address-Level Samples with Source Mapping
+
+```bash
+samply query asm FUNCTION
+```
+
+Returns `hot_addresses` sorted by offset (code order), each with:
+- `offset` - offset from function start
+- `address` - absolute address
+- `source_line` - corresponding source line number (if available)
+- `samples` / `percent` - sample counts
+
+#### summary - Profile Overview
+
+```bash
+samply query summary
+```
+
+### Workflow
+
+```bash
+# 1. Find bottleneck
+samply query drilldown main --depth 20
+# → Shows: parse_json at line 234 is bottleneck (65% self-time)
+# → drilldown includes hot_lines for the bottleneck function
+
+# 2. If you need address-level detail
+samply query asm parse_json
+# → Shows hot addresses sorted by code order with source line mapping
+
+# 3. If stdlib bottleneck (malloc, pthread_wait), drill from higher level
+samply query drilldown "MyApp::process" --depth 10
+```
+
+## Key Concepts
+
+| Term | Meaning |
+|------|---------|
+| **self-time** | Time in function itself, not callees |
+| **total-time** | Time in function + all callees |
+| **bottleneck** | High self-time = CPU cycles burned here |
+| **hot path** | Call chain consuming most time |
+
+## Output Format
+
+All queries return JSON:
+
+```json
+{
+  "success": true,
+  "query": "drilldown",
+  "data": {
+    "root": "main",
+    "path": [...],
+    "bottleneck": {
+      "function": "parse_json",
+      "file_path": "/src/parser.rs",
+      "line_number": 234,
+      "self_percent": 65.0
+    }
+  }
+}
+```
+
+### drilldown node
+
+```json
+{
+  "function": "parse_json",
+  "library": "myapp",
+  "file_path": "/src/parser.rs",
+  "line_number": 234,
+  "total_percent": 70.0,
+  "self_percent": 65.0,
+  "is_bottleneck": true,
+  "callees": [{"name": "alloc", "percent": 5.0, "is_hottest": true}],
+  "hot_lines": [{"line": 236, "samples": 800, "percent": 52.5}]
+}
+```
+
+### hotspot entry
+
+```json
+{
+  "rank": 1,
+  "function": {"name": "...", "library": "...", "file_path": "...", "line_number": 234},
+  "self_samples": 1523,
+  "self_percent": 15.2,
+  "total_samples": 4521,
+  "total_percent": 45.2
+}
+```
+
+With `--show-lines`: adds `"hot_lines": [{"line": 236, "samples": 800, "percent": 52.5}]`
+With `--show-addresses`: adds `"hot_addresses": [{"offset": 12, "address": "0x1234", "source_line": 236, "samples": 500, "percent": 32.8}]`
+
+## Tips
+
+1. **Start with `drilldown main`** - automatically shows hot path
+2. **Default threshold is 5%** - catches most bottlenecks; use `--threshold 20` for only severe
+3. **Wait bottlenecks** (`pthread_cond_wait`) = blocking, drill from elsewhere
+4. **Substring match** - `drilldown dispatch` matches `Interpreter::dispatch`
+5. **Pre-symbolication is on by default** - use `--no-presymbolicate` to skip if you want faster recording
+
+## Building
+
+```bash
 cargo build --release
-./target/release/samply ...
+./target/release/samply record ./my-app
 ```
 
-## Description
+## Troubleshooting
 
-```sh
-samply record ./my-application my-arguments
-```
+### Unsymbolicated Profile (Function Names Are Hex Addresses)
 
-This spawns `./my-application my-arguments` in a subprocess and records a profile of its execution. When the command finishes, samply opens
-[profiler.firefox.com](https://profiler.firefox.com/) in your default browser, loads the recorded profile in it, and starts a local webserver which serves symbol information and source code.
+If you see function names like `0x1efcfc` instead of readable names, your profile isn't symbolicated.
 
-Then you can inspect the profile. And you can upload it.
+**Symptoms:**
+- `samply query hotspots` shows functions like `0x1efcfc`, `0x4ba9dc`
+- `samply query drilldown main` returns empty with "function not found" error
+- Server startup shows warning about unsymbolicated profile
 
-Here's an example: https://share.firefox.dev/3j3PJoK
-
-This is a profile of [dump_syms](https://github.com/mozilla/dump_syms), running on macOS, recorded as follows:
-
-```
-samply record ./dump_syms ~/mold-opt-libxul.so > /dev/null
-```
-
-You can see which functions were running for how long. You can see flame graphs and timelines. You can double-click functions in the call tree to open the source view, and see which lines of code were sampled how many times.
-
-All data is kept locally (on disk and in RAM) until you choose to upload your profile.
-
-samply is a sampling profiler and collects stack traces, per thread, at some sampling interval (the default 1000Hz, i.e. 1ms). On macOS and Windows, both on- and off-cpu samples are collected (so you can see under which stack you were blocking on a lock, for example). On Linux, only on-cpu samples are collected at the moment.
-
-On Linux, samply needs access to performance events system for unprivileged users. For this, you can either:
-
- - Grant access until reboot:
-
-   ```sh
-   echo '1' | sudo tee /proc/sys/kernel/perf_event_paranoid
+**Solutions:**
+1. **Re-record with presymbolication** (enabled by default):
+   ```bash
+   samply record ./my-app
    ```
 
- - Grant access more permanently:
-
-   ```sh
-   sudo sysctl kernel.perf_event_paranoid=1
+2. **Symbolicate an existing profile:**
+   ```bash
+   samply import --presymbolicate profile.json -o symbolicated.json
+   samply analyze serve symbolicated.json --no-open &
    ```
 
- - If using Linux 5.8 or later, you can try setting the `CAP_PERFMON` capability as effective and permitted for samply, though people have reported mixed results with this approach:
+### Function Not Found in Drilldown
 
-   ```
-   sudo setcap 'cap_perfmon+ep' `which samply`
-   ```
-
-If you still get a `mmap failed` error (an `EPERM`), you might also need to increase the `mlock` limit, e.g.:
-
-```
-sudo sysctl kernel.perf_event_mlock_kb=2048
+If `drilldown` returns an error, the response includes `suggestions` with the top functions in the profile:
+```json
+{
+  "error": "Function 'main' not found...",
+  "suggestions": ["0x1efcfc (4.4%)", "my_func (2.1%)", ...]
+}
 ```
 
-## Examples
-
-Here's a profile from `samply record rustup check`: https://share.firefox.dev/3hteKZZ
-
-## Turn on debug info for full stacks
-
-If you profile Rust code, make sure to profile a binary which was compiled **in release mode** and **with debug info**. This will give you inline stacks and a working source code view.
-
-The best way is the following:
-
- 1. Create a global cargo profile called `profiling`, see below how.
- 2. Compile with `cargo build --profile profiling`.
- 3. Record with `samply record ./target/profiling/yourrustprogram`.
-
-To create the `profiling` cargo profile, create a text file at `~/.cargo/config.toml` with the following content:
-
-```toml
-[profile.profiling]
-inherits = "release"
-debug = true
-```
-
-Similar advice applies to other compiled languages. For C++, you'll want to make sure the `-g` flag is included in the compiler invocation.
-
-## Known issues
-
-On macOS, samply cannot profile system commands, such as the `sleep` command or system `python`. This is because system executables are signed in such a way that they block the `DYLD_INSERT_LIBRARIES` environment variable, which breaks samply's ability to siphon out the `mach_port` of the process.
-
-But you can profile any binaries that you've compiled yourself, or which are unsigned or locally-signed (such as anything installed by `cargo install` or by [Homebrew](https://brew.sh)). In order to attach to running processes on macOS, run `samply setup` once (and every time `samply` is updated) self-sign the samply binary.
+Use one of the suggested functions, or check if your profile is symbolicated.
 
 ## License
 
-Licensed under either of
-
-  * Apache License, Version 2.0 ([`LICENSE-APACHE`](./LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0)
-  * MIT license ([`LICENSE-MIT`](./LICENSE-MIT) or http://opensource.org/licenses/MIT)
-
-at your option.
-
-Unless you explicitly state otherwise, any contribution intentionally submitted
-for inclusion in the work by you, as defined in the Apache-2.0 license, shall be
-dual licensed as above, without any additional terms or conditions.
+Apache-2.0 OR MIT

@@ -64,32 +64,42 @@ impl QueryClient {
         &self,
         limit: usize,
         thread: Option<&str>,
+        include_lines: bool,
+        include_addresses: bool,
     ) -> Result<String, QueryError> {
         let mut url = format!("{}/query/hotspots?limit={}", self.server_url, limit);
         if let Some(t) = thread {
             url.push_str(&format!("&thread={}", urlencoding::encode(t)));
         }
+        if include_lines {
+            url.push_str("&include_lines=true");
+        }
+        if include_addresses {
+            url.push_str("&include_addresses=true");
+        }
         self.get(&url)
     }
 
     /// Query callers of a function
-    pub fn query_callers(&self, function: &str, depth: usize) -> Result<String, QueryError> {
+    pub fn query_callers(&self, function: &str, depth: usize, limit: usize) -> Result<String, QueryError> {
         let url = format!(
-            "{}/query/callers?function={}&depth={}",
+            "{}/query/callers?function={}&depth={}&limit={}",
             self.server_url,
             urlencoding::encode(function),
-            depth
+            depth,
+            limit
         );
         self.get(&url)
     }
 
     /// Query callees of a function
-    pub fn query_callees(&self, function: &str, depth: usize) -> Result<String, QueryError> {
+    pub fn query_callees(&self, function: &str, depth: usize, limit: usize) -> Result<String, QueryError> {
         let url = format!(
-            "{}/query/callees?function={}&depth={}",
+            "{}/query/callees?function={}&depth={}&limit={}",
             self.server_url,
             urlencoding::encode(function),
-            depth
+            depth,
+            limit
         );
         self.get(&url)
     }
@@ -97,6 +107,33 @@ impl QueryClient {
     /// Query profile summary
     pub fn query_summary(&self) -> Result<String, QueryError> {
         let url = format!("{}/query/summary", self.server_url);
+        self.get(&url)
+    }
+
+    /// Query assembly for a function
+    pub fn query_asm(&self, function: &str) -> Result<String, QueryError> {
+        let url = format!(
+            "{}/query/asm?function={}",
+            self.server_url,
+            urlencoding::encode(function)
+        );
+        self.get(&url)
+    }
+
+    /// Query drilldown from a function following the hottest callee path
+    pub fn query_drilldown(
+        &self,
+        function: &str,
+        depth: usize,
+        threshold: f64,
+    ) -> Result<String, QueryError> {
+        let url = format!(
+            "{}/query/drilldown?function={}&depth={}&threshold={}",
+            self.server_url,
+            urlencoding::encode(function),
+            depth,
+            threshold
+        );
         self.get(&url)
     }
 

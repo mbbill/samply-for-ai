@@ -153,6 +153,13 @@ fn do_record_action(record_args: cli::RecordArgs) {
     // Drop the profile so that it doesn't take up memory while the server is running.
     drop(profile);
 
+    // Handle --serve flag: start analysis server for AI/CLI workflow
+    if record_args.serve {
+        run_analysis_server_for_record(&record_args.output, record_args.symbol_props());
+        // Don't exit - server keeps running
+        return;
+    }
+
     // then fire up the server for the profiler front end, if not save-only
     if let Some(server_props) = record_args.server_props() {
         run_server_serving_profile(
@@ -297,6 +304,112 @@ fn run_server_serving_profile(
 }
 
 // ============================================================================
+// Analysis server helper for --serve flag
+// ============================================================================
+
+#[cfg(any(
+    target_os = "android",
+    target_os = "macos",
+    target_os = "linux",
+    target_os = "windows"
+))]
+fn run_analysis_server_for_record(profile_path: &Path, symbol_props: shared::prop_types::SymbolProps) {
+    // Check if a session already exists
+    if session::Session::exists() {
+        if let Ok(existing) = session::Session::load() {
+            if existing.is_server_alive() {
+                eprintln!(
+                    "Error: An analysis server is already running (PID {})",
+                    existing.pid
+                );
+                eprintln!("Stop it first with: samply analyze stop");
+                std::process::exit(1);
+            }
+            // Clean up stale session
+            let _ = session::Session::remove();
+        }
+    }
+
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async {
+        let (symbol_manager, quota_manager) =
+            create_symbol_manager_and_quota_manager(symbol_props, false);
+
+        let ctrl_c_receiver = shared::ctrl_c::CtrlC::observe_oneshot();
+
+        // Use default server props with no browser opening
+        let server_props = ServerProps {
+            address: std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)),
+            port_selection: server::PortSelection::TryMultiple(3000..3100),
+            verbose: false,
+            open_in_browser: false,
+        };
+
+        let server_result = server::start_analysis_server(
+            profile_path,
+            server_props,
+            symbol_manager,
+            ctrl_c_receiver,
+        )
+        .await;
+
+        let server_info = match server_result {
+            Ok(info) => info,
+            Err(e) => {
+                eprintln!("Error loading profile: {}", e);
+                std::process::exit(1);
+            }
+        };
+
+        // Save session file
+        let sess = session::Session::new(
+            server_info.token_url.clone(),
+            profile_path.to_string_lossy().to_string(),
+        );
+        if let Err(e) = sess.save() {
+            eprintln!("Warning: Could not save session file: {}", e);
+        }
+
+        // Warn if profile appears unsymbolicated
+        if server_info.is_likely_unsymbolicated {
+            eprintln!();
+            eprintln!("WARNING: Profile appears to be unsymbolicated (function names are hex addresses).");
+            eprintln!("         Query results will show addresses like '0x1efcfc' instead of function names.");
+            eprintln!("         To get readable results, re-record with presymbolication (enabled by default)");
+            eprintln!("         or use 'samply import' to symbolicate an existing profile.");
+            eprintln!();
+        }
+
+        eprintln!("Analysis server running at {}", server_info.server_origin);
+        eprintln!("Session file: {:?}", session::Session::session_file_path());
+        eprintln!();
+        eprintln!("Available query commands:");
+        eprint!("{}", cli::get_query_help());
+        eprintln!();
+        eprintln!("Run 'samply query --help' for detailed usage.");
+        eprintln!("Run 'samply analyze stop' to stop the server.");
+        eprintln!();
+        eprintln!("Press Ctrl+C to stop.");
+
+        // Run server until stopped
+        if let Err(e) = server_info.server_join_handle.await {
+            eprintln!("Server error: {}", e);
+        }
+
+        // Clean up session file
+        let _ = session::Session::remove();
+
+        if let Some(quota_manager) = quota_manager {
+            quota_manager.finish().await;
+        }
+    });
+}
+
+// ============================================================================
 // Analyze command handlers
 // ============================================================================
 
@@ -367,21 +480,24 @@ fn do_analyze_serve(args: cli::AnalyzeServeArgs) {
             eprintln!("Warning: Could not save session file: {}", e);
         }
 
+        // Warn if profile appears unsymbolicated
+        if server_info.is_likely_unsymbolicated {
+            eprintln!();
+            eprintln!("WARNING: Profile appears to be unsymbolicated (function names are hex addresses).");
+            eprintln!("         Query results will show addresses like '0x1efcfc' instead of function names.");
+            eprintln!("         To get readable results, re-record with presymbolication (enabled by default)");
+            eprintln!("         or use 'samply import' to symbolicate an existing profile.");
+            eprintln!();
+        }
+
         eprintln!("Analysis server running at {}", server_info.server_origin);
         eprintln!("Session file: {:?}", session::Session::session_file_path());
-        eprintln!("");
-        eprintln!("Query endpoints available:");
-        eprintln!("  {}/query/hotspots?limit=20", server_info.token_url);
-        eprintln!("  {}/query/callers?function=NAME&depth=5", server_info.token_url);
-        eprintln!("  {}/query/callees?function=NAME&depth=5", server_info.token_url);
-        eprintln!("  {}/query/summary", server_info.token_url);
-        eprintln!("");
-        eprintln!("Or use the CLI:");
-        eprintln!("  samply query hotspots --limit 20");
-        eprintln!("  samply query callers FUNCTION --depth 5");
-        eprintln!("  samply query callees FUNCTION --depth 5");
-        eprintln!("  samply query summary");
-        eprintln!("");
+        eprintln!();
+        eprintln!("Available query commands:");
+        eprint!("{}", cli::get_query_help());
+        eprintln!();
+        eprintln!("Run 'samply query --help' for detailed usage.");
+        eprintln!();
         eprintln!("Press Ctrl+C to stop.");
 
         // Run server until stopped
@@ -448,22 +564,20 @@ fn do_query_action(query_args: cli::QueryArgs) {
 
     let result = match query_args.command {
         cli::QueryCommand::Hotspots(args) => {
-            client.query_hotspots(args.limit, args.thread.as_deref())
+            client.query_hotspots(args.limit, args.thread.as_deref(), args.show_lines, args.show_addresses)
         }
         cli::QueryCommand::Callers(args) => {
-            client.query_callers(&args.function, args.depth)
+            client.query_callers(&args.function, args.depth, args.limit)
         }
         cli::QueryCommand::Callees(args) => {
-            client.query_callees(&args.function, args.depth)
+            client.query_callees(&args.function, args.depth, args.limit)
         }
         cli::QueryCommand::Summary => client.query_summary(),
-        cli::QueryCommand::Source(_args) => {
-            eprintln!("Source query not yet implemented");
-            std::process::exit(1);
+        cli::QueryCommand::Asm(args) => {
+            client.query_asm(&args.function)
         }
-        cli::QueryCommand::Asm(_args) => {
-            eprintln!("Asm query not yet implemented");
-            std::process::exit(1);
+        cli::QueryCommand::Drilldown(args) => {
+            client.query_drilldown(&args.function, args.depth, args.threshold)
         }
     };
 

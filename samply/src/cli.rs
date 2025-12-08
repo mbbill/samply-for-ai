@@ -143,11 +143,11 @@ pub enum QueryCommand {
     /// Get a summary of the profile.
     Summary,
 
-    /// Get source code for a function.
-    Source(SourceArgs),
-
     /// Get assembly for a function.
     Asm(AsmArgs),
+
+    /// Drilldown from a function following the hottest callee path.
+    Drilldown(DrilldownArgs),
 }
 
 #[derive(Debug, Args)]
@@ -156,17 +156,17 @@ pub struct HotspotsArgs {
     #[arg(long, default_value = "20")]
     pub limit: usize,
 
-    /// Include source code snippets.
-    #[arg(long)]
-    pub with_source: bool,
-
-    /// Include assembly.
-    #[arg(long)]
-    pub with_asm: bool,
-
     /// Filter to a specific thread.
     #[arg(long)]
     pub thread: Option<String>,
+
+    /// Include per-line sample counts in output.
+    #[arg(long)]
+    pub show_lines: bool,
+
+    /// Include per-address sample counts in output.
+    #[arg(long)]
+    pub show_addresses: bool,
 }
 
 #[derive(Debug, Args)]
@@ -177,6 +177,10 @@ pub struct CallersArgs {
     /// Maximum depth of caller chain.
     #[arg(long, default_value = "5")]
     pub depth: usize,
+
+    /// Maximum number of callers to return at each level.
+    #[arg(long, default_value = "20")]
+    pub limit: usize,
 }
 
 #[derive(Debug, Args)]
@@ -187,22 +191,30 @@ pub struct CalleesArgs {
     /// Maximum depth of callee chain.
     #[arg(long, default_value = "5")]
     pub depth: usize,
-}
 
-#[derive(Debug, Args)]
-pub struct SourceArgs {
-    /// Function name.
-    pub function: String,
-
-    /// Number of context lines around the function.
-    #[arg(long, default_value = "10")]
-    pub context: usize,
+    /// Maximum number of callees to return at each level.
+    #[arg(long, default_value = "20")]
+    pub limit: usize,
 }
 
 #[derive(Debug, Args)]
 pub struct AsmArgs {
     /// Function name.
     pub function: String,
+}
+
+#[derive(Debug, Args)]
+pub struct DrilldownArgs {
+    /// Function name to start drilling down from.
+    pub function: String,
+
+    /// Maximum depth to drill down.
+    #[arg(long, default_value = "10")]
+    pub depth: usize,
+
+    /// Self-time percentage threshold to consider a function a bottleneck.
+    #[arg(long, default_value = "5.0")]
+    pub threshold: f64,
 }
 
 #[derive(Debug, Args)]
@@ -288,6 +300,11 @@ pub struct RecordArgs {
     /// Do not run a local server after recording.
     #[arg(short, long)]
     pub save_only: bool,
+
+    /// Start analysis server after recording (for AI/CLI workflow).
+    /// This starts a query server instead of opening the web UI.
+    #[arg(long, conflicts_with = "save_only")]
+    pub serve: bool,
 
     /// Output filename.
     #[arg(short, long, default_value = "profile.json.gz")]
@@ -461,12 +478,12 @@ pub struct ProfileCreationArgs {
     #[arg(long, default_value = "0", num_args=0..=1, require_equals = true, default_missing_value = "100")]
     pub include_args: usize,
 
-    /// Generate a symbolicated profile file by looking up symbol information before writing out the file.
+    /// Skip pre-symbolication of the profile file.
     ///
-    /// This is off by default because symbol resolution can take a long time, so
-    /// the default behavior is to have the front-end apply symbols asynchronously.
+    /// By default, samply looks up symbol information before writing the profile.
+    /// Use this flag to skip symbolication and have the front-end apply symbols asynchronously.
     #[arg(long)]
-    pub presymbolicate: bool,
+    pub no_presymbolicate: bool,
 
     /// Emit markers for any unknown ETW events that are encountered.
     #[cfg(target_os = "windows")]
@@ -666,7 +683,7 @@ impl ProfileCreationArgs {
             create_per_cpu_threads: self.per_cpu_threads,
             arg_count_to_include_in_process_name: self.include_args,
             override_arch: None,
-            presymbolicate: self.presymbolicate,
+            presymbolicate: !self.no_presymbolicate,
             should_emit_jit_markers: self.jit_markers,
             should_emit_cswitch_markers: self.cswitch_markers,
             coreclr: self.coreclr_profile_props(),
@@ -725,6 +742,27 @@ impl SymbolArgs {
             simpleperf_binary_cache: self.simpleperf_binary_cache.clone(),
         }
     }
+}
+
+/// Generate help text for query commands (used in analyze serve output)
+pub fn get_query_help() -> String {
+    use clap::CommandFactory;
+    let mut help = String::new();
+
+    // Get the full command and navigate to the query subcommand
+    let cmd = Opt::command();
+    let query_cmd = cmd
+        .get_subcommands()
+        .find(|c| c.get_name() == "query")
+        .expect("query subcommand should exist");
+
+    for subcommand in query_cmd.get_subcommands() {
+        let name = subcommand.get_name();
+        let about = subcommand.get_about().map(|s| s.to_string()).unwrap_or_default();
+        help.push_str(&format!("  samply query {:<12} - {}\n", name, about));
+    }
+
+    help
 }
 
 #[cfg(test)]

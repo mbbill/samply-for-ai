@@ -60,6 +60,8 @@ pub struct RunningServerInfo {
     pub server_origin: String,
     pub token_url: String,
     pub profiler_url: Option<String>,
+    /// Whether the profile appears to be unsymbolicated (function names are hex addresses)
+    pub is_likely_unsymbolicated: bool,
 }
 
 pub async fn start_server(
@@ -121,6 +123,7 @@ pub async fn start_server(
         server_origin,
         token_url: symbol_server_url,
         profiler_url,
+        is_likely_unsymbolicated: false, // Not applicable for regular server
     }
 }
 
@@ -133,6 +136,7 @@ pub async fn start_analysis_server(
 ) -> Result<RunningServerInfo, crate::profile_analysis::AnalysisError> {
     // Load the profile for analysis
     let analyzer = ProfileAnalyzer::from_file(profile_path)?;
+    let is_likely_unsymbolicated = analyzer.is_likely_unsymbolicated();
 
     let (listener, addr) = make_listener(server_props.address, server_props.port_selection.clone()).await;
 
@@ -182,6 +186,7 @@ pub async fn start_analysis_server(
         server_origin,
         token_url: symbol_server_url,
         profiler_url: Some(profiler_url),
+        is_likely_unsymbolicated,
     })
 }
 
@@ -480,7 +485,14 @@ fn handle_query_request(
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(20);
             let thread = params.get("thread").map(|s| s.as_str());
-            let hotspots = analyzer.compute_hotspots(limit, thread);
+            // By default, don't include hot_lines and hot_addresses (compact output)
+            let include_lines = params.get("include_lines")
+                .map(|s| s == "true" || s == "1")
+                .unwrap_or(false);
+            let include_addresses = params.get("include_addresses")
+                .map(|s| s == "true" || s == "1")
+                .unwrap_or(false);
+            let hotspots = analyzer.compute_hotspots(limit, thread, include_lines, include_addresses);
             serde_json::json!({
                 "success": true,
                 "query": "hotspots",
@@ -492,13 +504,16 @@ fn handle_query_request(
             let depth = params.get("depth")
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(5);
+            let limit = params.get("limit")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(20);
             if function.is_empty() {
                 return serde_json::json!({
                     "success": false,
                     "error": "Missing 'function' parameter"
                 }).to_string();
             }
-            let callers = analyzer.find_callers(function, depth);
+            let callers = analyzer.find_callers(function, depth, limit);
             serde_json::json!({
                 "success": true,
                 "query": "callers",
@@ -510,13 +525,16 @@ fn handle_query_request(
             let depth = params.get("depth")
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(5);
+            let limit = params.get("limit")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(20);
             if function.is_empty() {
                 return serde_json::json!({
                     "success": false,
                     "error": "Missing 'function' parameter"
                 }).to_string();
             }
-            let callees = analyzer.find_callees(function, depth);
+            let callees = analyzer.find_callees(function, depth, limit);
             serde_json::json!({
                 "success": true,
                 "query": "callees",
@@ -529,6 +547,42 @@ fn handle_query_request(
                 "success": true,
                 "query": "summary",
                 "data": summary
+            }).to_string()
+        }
+        "/query/asm" => {
+            let function = params.get("function").map(|s| s.as_str()).unwrap_or("");
+            if function.is_empty() {
+                return serde_json::json!({
+                    "success": false,
+                    "error": "Missing 'function' parameter"
+                }).to_string();
+            }
+            let asm = analyzer.get_asm(function);
+            serde_json::json!({
+                "success": true,
+                "query": "asm",
+                "data": asm
+            }).to_string()
+        }
+        "/query/drilldown" => {
+            let function = params.get("function").map(|s| s.as_str()).unwrap_or("");
+            if function.is_empty() {
+                return serde_json::json!({
+                    "success": false,
+                    "error": "Missing 'function' parameter"
+                }).to_string();
+            }
+            let depth: usize = params.get("depth")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(10);
+            let threshold: f64 = params.get("threshold")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(5.0);
+            let drilldown = analyzer.drilldown(function, depth, threshold);
+            serde_json::json!({
+                "success": true,
+                "query": "drilldown",
+                "data": drilldown
             }).to_string()
         }
         _ => {
