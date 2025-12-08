@@ -2,6 +2,12 @@
 
 A CPU sampling profiler designed for AI-driven performance debugging. This tool enables AI agents to autonomously identify and fix performance bottlenecks through a structured CLI interface that returns machine-readable JSON output.
 
+## Installation
+
+```bash
+cargo install --git https://github.com/anthropics/samply-for-ai
+```
+
 ## Teaching AI to Use This Tool
 
 1. **Tell AI the tool exists**: "There's a profiling tool called `samply-for-ai` installed on this system for finding performance bottlenecks."

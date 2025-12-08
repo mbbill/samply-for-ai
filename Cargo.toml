@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-default-members = ["samply"]
+default-members = ["samply"]  # directory name, package is "samply-for-ai"
 members = [
     "fxprof-processed-profile",
     "gecko_profile",

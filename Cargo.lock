@@ -2211,8 +2211,35 @@ dependencies = [
 ]
 
 [[package]]
-name = "samply"
-version = "0.13.1"
+name = "samply-api"
+version = "0.24.0"
+dependencies = [
+ "anyhow",
+ "assert-json-diff",
+ "futures",
+ "memmap2",
+ "samply-debugid",
+ "samply-symbols",
+ "serde",
+ "serde_derive",
+ "serde_json",
+ "thiserror 2.0.17",
+ "yaxpeax-arch",
+ "yaxpeax-arm",
+ "yaxpeax-x86",
+]
+
+[[package]]
+name = "samply-debugid"
+version = "0.1.0"
+dependencies = [
+ "debugid",
+ "uuid",
+]
+
+[[package]]
+name = "samply-for-ai"
+version = "0.1.0"
 dependencies = [
  "bitflags",
  "byteorder",
@@ -2277,33 +2304,6 @@ dependencies = [
  "wholesym",
  "windows 0.61.3",
  "winver",
-]
-
-[[package]]
-name = "samply-api"
-version = "0.24.0"
-dependencies = [
- "anyhow",
- "assert-json-diff",
- "futures",
- "memmap2",
- "samply-debugid",
- "samply-symbols",
- "serde",
- "serde_derive",
- "serde_json",
- "thiserror 2.0.17",
- "yaxpeax-arch",
- "yaxpeax-arm",
- "yaxpeax-x86",
-]
-
-[[package]]
-name = "samply-debugid"
-version = "0.1.0"
-dependencies = [
- "debugid",
- "uuid",
 ]
 
 [[package]]
