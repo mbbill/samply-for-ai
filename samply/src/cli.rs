@@ -58,6 +58,12 @@ pub enum Action {
     /// Import a perf.data file and display the profile.
     Import(ImportArgs),
 
+    /// Start or stop the analysis server.
+    Analyze(AnalyzeArgs),
+
+    /// Query the running analysis server (for AI/programmatic access).
+    Query(QueryArgs),
+
     #[cfg(target_os = "windows")]
     #[clap(hide = true)]
     /// Used in the elevated helper process.
@@ -66,6 +72,137 @@ pub enum Action {
     /// Codesign the samply binary on macOS to allow attaching to processes.
     #[cfg(target_os = "macos")]
     Setup(SetupArgs),
+}
+
+// ============================================================================
+// Analyze subcommands (server management)
+// ============================================================================
+
+#[derive(Debug, Args)]
+pub struct AnalyzeArgs {
+    #[command(subcommand)]
+    pub command: AnalyzeCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum AnalyzeCommand {
+    /// Start an analysis server for a profile file.
+    Serve(AnalyzeServeArgs),
+
+    /// Stop the running analysis server.
+    Stop,
+}
+
+#[derive(Debug, Args)]
+pub struct AnalyzeServeArgs {
+    /// Path to the profile file to analyze.
+    pub file: PathBuf,
+
+    #[command(flatten)]
+    pub server_args: ServerArgs,
+
+    #[command(flatten)]
+    pub symbol_args: SymbolArgs,
+
+    /// Run in foreground (don't daemonize).
+    #[arg(long)]
+    pub foreground: bool,
+}
+
+impl AnalyzeServeArgs {
+    pub fn server_props(&self) -> ServerProps {
+        self.server_args.server_props()
+    }
+
+    pub fn symbol_props(&self) -> SymbolProps {
+        self.symbol_args.symbol_props()
+    }
+}
+
+// ============================================================================
+// Query subcommands (analysis queries)
+// ============================================================================
+
+#[derive(Debug, Args)]
+pub struct QueryArgs {
+    #[command(subcommand)]
+    pub command: QueryCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum QueryCommand {
+    /// Get the hottest functions by sample count.
+    Hotspots(HotspotsArgs),
+
+    /// Find callers of a function.
+    Callers(CallersArgs),
+
+    /// Find callees of a function.
+    Callees(CalleesArgs),
+
+    /// Get a summary of the profile.
+    Summary,
+
+    /// Get source code for a function.
+    Source(SourceArgs),
+
+    /// Get assembly for a function.
+    Asm(AsmArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct HotspotsArgs {
+    /// Maximum number of hotspots to return.
+    #[arg(long, default_value = "20")]
+    pub limit: usize,
+
+    /// Include source code snippets.
+    #[arg(long)]
+    pub with_source: bool,
+
+    /// Include assembly.
+    #[arg(long)]
+    pub with_asm: bool,
+
+    /// Filter to a specific thread.
+    #[arg(long)]
+    pub thread: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct CallersArgs {
+    /// Function name (exact match or substring).
+    pub function: String,
+
+    /// Maximum depth of caller chain.
+    #[arg(long, default_value = "5")]
+    pub depth: usize,
+}
+
+#[derive(Debug, Args)]
+pub struct CalleesArgs {
+    /// Function name (exact match or substring).
+    pub function: String,
+
+    /// Maximum depth of callee chain.
+    #[arg(long, default_value = "5")]
+    pub depth: usize,
+}
+
+#[derive(Debug, Args)]
+pub struct SourceArgs {
+    /// Function name.
+    pub function: String,
+
+    /// Number of context lines around the function.
+    #[arg(long, default_value = "10")]
+    pub context: usize,
+}
+
+#[derive(Debug, Args)]
+pub struct AsmArgs {
+    /// Function name.
+    pub function: String,
 }
 
 #[derive(Debug, Args)]

@@ -23,6 +23,7 @@ use tokio::net::TcpListener;
 use tokio_util::io::ReaderStream;
 use wholesym::SymbolManager;
 
+use crate::profile_analysis::ProfileAnalyzer;
 use crate::shared::ctrl_c;
 
 #[derive(Clone, Debug)]
@@ -57,6 +58,7 @@ pub struct RunningServerInfo {
     pub server_join_handle:
         tokio::task::JoinHandle<Result<(), Box<dyn std::error::Error + Send + Sync>>>,
     pub server_origin: String,
+    pub token_url: String,
     pub profiler_url: Option<String>,
 }
 
@@ -107,17 +109,80 @@ pub async fn start_server(
     let server_join_handle = tokio::task::spawn(run_server(
         listener,
         symbol_manager,
+        None, // No profile analyzer for regular server
         profile_filename.map(PathBuf::from),
         template_values,
-        path_prefix,
+        path_prefix.clone(),
         stop_signal,
     ));
 
     RunningServerInfo {
         server_join_handle,
         server_origin,
+        token_url: symbol_server_url,
         profiler_url,
     }
+}
+
+/// Start an analysis server with profile loaded for querying
+pub async fn start_analysis_server(
+    profile_path: &Path,
+    server_props: ServerProps,
+    symbol_manager: SymbolManager,
+    stop_signal: ctrl_c::Receiver,
+) -> Result<RunningServerInfo, crate::profile_analysis::AnalysisError> {
+    // Load the profile for analysis
+    let analyzer = ProfileAnalyzer::from_file(profile_path)?;
+
+    let (listener, addr) = make_listener(server_props.address, server_props.port_selection.clone()).await;
+
+    let token = generate_token();
+    let path_prefix = format!("/{token}");
+    let env_server_override = std::env::var("SAMPLY_SERVER_URL").ok();
+    let server_origin = match &env_server_override {
+        Some(s) => s.trim_end_matches('/').to_string(),
+        None => format!("http://{addr}"),
+    };
+    let symbol_server_url = format!("{server_origin}{path_prefix}");
+
+    let mut template_values: HashMap<&'static str, String> = HashMap::new();
+    template_values.insert("SAMPLY_SERVER_URL", server_origin.clone());
+    template_values.insert("PATH_PREFIX", path_prefix.clone());
+
+    let profile_url = format!("{symbol_server_url}/profile.json");
+    let env_profiler_override = std::env::var("PROFILER_URL").ok();
+    let profiler_origin = match &env_profiler_override {
+        Some(s) => s.trim_end_matches('/'),
+        None => "https://profiler.firefox.com",
+    };
+
+    let encoded_profile_url = utf8_percent_encode(&profile_url, BAD_CHARS).to_string();
+    let encoded_symbol_server_url =
+        utf8_percent_encode(&symbol_server_url, BAD_CHARS).to_string();
+    let profiler_url = format!(
+        "{profiler_origin}/from-url/{encoded_profile_url}/?symbolServer={encoded_symbol_server_url}"
+    );
+    template_values.insert("PROFILER_URL", profiler_url.clone());
+    template_values.insert("PROFILE_URL", profile_url);
+
+    let template_values = Arc::new(template_values);
+
+    let server_join_handle = tokio::task::spawn(run_server(
+        listener,
+        symbol_manager,
+        Some(Arc::new(analyzer)),
+        Some(profile_path.to_path_buf()),
+        template_values,
+        path_prefix.clone(),
+        stop_signal,
+    ));
+
+    Ok(RunningServerInfo {
+        server_join_handle,
+        server_origin,
+        token_url: symbol_server_url,
+        profiler_url: Some(profiler_url),
+    })
 }
 
 // Returns a base32 string for 24 random bytes.
@@ -196,6 +261,7 @@ const TEMPLATE_WITHOUT_PROFILE: &str = r#"
 async fn run_server(
     listener: TcpListener,
     symbol_manager: SymbolManager,
+    analyzer: Option<Arc<ProfileAnalyzer>>,
     profile_filename: Option<PathBuf>,
     template_values: Arc<HashMap<&'static str, String>>,
     path_prefix: String,
@@ -217,6 +283,7 @@ async fn run_server(
         let io = TokioIo::new(stream);
 
         let symbol_manager = symbol_manager.clone();
+        let analyzer = analyzer.clone();
         let profile_filename = profile_filename.clone();
         let template_values = template_values.clone();
         let path_prefix = path_prefix.clone();
@@ -233,6 +300,7 @@ async fn run_server(
                             req,
                             template_values.clone(),
                             symbol_manager.clone(),
+                            analyzer.clone(),
                             profile_filename.clone(),
                             path_prefix.clone(),
                         )
@@ -252,6 +320,7 @@ async fn symbolication_service(
     req: Request<hyper::body::Incoming>,
     template_values: Arc<HashMap<&'static str, String>>,
     symbol_manager: Arc<SymbolManager>,
+    analyzer: Option<Arc<ProfileAnalyzer>>,
     profile_filename: Option<PathBuf>,
     path_prefix: String,
 ) -> Result<Response<MyBody>, hyper::Error> {
@@ -368,12 +437,107 @@ async fn symbolication_service(
 
             *response.body_mut() = Either::Right(Either::Right(response_body.boxed()));
         }
+        // Query endpoints for AI-assisted analysis
+        (&Method::GET, path, _) if path.starts_with("/query/") => {
+            response.headers_mut().insert(
+                header::CONTENT_TYPE,
+                header::HeaderValue::from_static("application/json"),
+            );
+
+            let query_string = req.uri().query().unwrap_or("");
+            let query_params: HashMap<String, String> = url::form_urlencoded::parse(query_string.as_bytes())
+                .into_owned()
+                .collect();
+
+            let response_json = handle_query_request(path, &query_params, analyzer.as_deref());
+            let response_body = Full::new(Bytes::from(response_json));
+            *response.body_mut() = Either::Right(Either::Right(response_body.boxed()));
+        }
         _ => {
             *response.status_mut() = StatusCode::NOT_FOUND;
         }
     };
 
     Ok(response)
+}
+
+/// Handle query requests for AI-assisted analysis
+fn handle_query_request(
+    path: &str,
+    params: &HashMap<String, String>,
+    analyzer: Option<&ProfileAnalyzer>,
+) -> String {
+    let Some(analyzer) = analyzer else {
+        return serde_json::json!({
+            "success": false,
+            "error": "Analysis not available. Start server with 'samply analyze serve' to enable queries."
+        }).to_string();
+    };
+
+    match path {
+        "/query/hotspots" => {
+            let limit = params.get("limit")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(20);
+            let thread = params.get("thread").map(|s| s.as_str());
+            let hotspots = analyzer.compute_hotspots(limit, thread);
+            serde_json::json!({
+                "success": true,
+                "query": "hotspots",
+                "data": hotspots
+            }).to_string()
+        }
+        "/query/callers" => {
+            let function = params.get("function").map(|s| s.as_str()).unwrap_or("");
+            let depth = params.get("depth")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(5);
+            if function.is_empty() {
+                return serde_json::json!({
+                    "success": false,
+                    "error": "Missing 'function' parameter"
+                }).to_string();
+            }
+            let callers = analyzer.find_callers(function, depth);
+            serde_json::json!({
+                "success": true,
+                "query": "callers",
+                "data": callers
+            }).to_string()
+        }
+        "/query/callees" => {
+            let function = params.get("function").map(|s| s.as_str()).unwrap_or("");
+            let depth = params.get("depth")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(5);
+            if function.is_empty() {
+                return serde_json::json!({
+                    "success": false,
+                    "error": "Missing 'function' parameter"
+                }).to_string();
+            }
+            let callees = analyzer.find_callees(function, depth);
+            serde_json::json!({
+                "success": true,
+                "query": "callees",
+                "data": callees
+            }).to_string()
+        }
+        "/query/summary" => {
+            let summary = analyzer.get_summary();
+            serde_json::json!({
+                "success": true,
+                "query": "summary",
+                "data": summary
+            }).to_string()
+        }
+        _ => {
+            serde_json::json!({
+                "success": false,
+                "error": format!("Unknown query endpoint: {}", path)
+            }).to_string()
+        }
+    }
 }
 
 fn substitute_template(template: &str, template_values: &HashMap<&'static str, String>) -> String {

@@ -12,8 +12,11 @@ mod cli_utils;
 mod import;
 mod linux_shared;
 mod name;
+mod profile_analysis;
 mod profile_json_preparse;
+mod query_client;
 mod server;
+mod session;
 mod shared;
 mod symbols;
 
@@ -47,6 +50,8 @@ fn main() {
     match opt.action {
         cli::Action::Load(load_args) => do_load_action(load_args),
         cli::Action::Import(import_args) => do_import_action(import_args),
+        cli::Action::Analyze(analyze_args) => do_analyze_action(analyze_args),
+        cli::Action::Query(query_args) => do_query_action(query_args),
 
         #[cfg(any(
             target_os = "android",
@@ -257,6 +262,7 @@ fn run_server_serving_profile(
             server_join_handle,
             server_origin,
             profiler_url,
+            ..
         } = start_server(
             Some(profile_path),
             server_props,
@@ -288,4 +294,191 @@ fn run_server_serving_profile(
             quota_manager.finish().await;
         }
     });
+}
+
+// ============================================================================
+// Analyze command handlers
+// ============================================================================
+
+fn do_analyze_action(analyze_args: cli::AnalyzeArgs) {
+    match analyze_args.command {
+        cli::AnalyzeCommand::Serve(args) => do_analyze_serve(args),
+        cli::AnalyzeCommand::Stop => do_analyze_stop(),
+    }
+}
+
+fn do_analyze_serve(args: cli::AnalyzeServeArgs) {
+    let profile_path = &args.file;
+
+    if !profile_path.exists() {
+        eprintln!("Error: Profile file not found: {:?}", profile_path);
+        std::process::exit(1);
+    }
+
+    // Check if a session already exists
+    if session::Session::exists() {
+        if let Ok(existing) = session::Session::load() {
+            if existing.is_server_alive() {
+                eprintln!(
+                    "Error: An analysis server is already running (PID {})",
+                    existing.pid
+                );
+                eprintln!("Stop it first with: samply analyze stop");
+                std::process::exit(1);
+            }
+            // Clean up stale session
+            let _ = session::Session::remove();
+        }
+    }
+
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async {
+        let (symbol_manager, quota_manager) =
+            create_symbol_manager_and_quota_manager(args.symbol_props(), args.server_props().verbose);
+
+        let ctrl_c_receiver = shared::ctrl_c::CtrlC::observe_oneshot();
+
+        let server_result = server::start_analysis_server(
+            profile_path,
+            args.server_props(),
+            symbol_manager,
+            ctrl_c_receiver,
+        )
+        .await;
+
+        let server_info = match server_result {
+            Ok(info) => info,
+            Err(e) => {
+                eprintln!("Error loading profile: {}", e);
+                std::process::exit(1);
+            }
+        };
+
+        // Save session file
+        let sess = session::Session::new(
+            server_info.token_url.clone(),
+            profile_path.to_string_lossy().to_string(),
+        );
+        if let Err(e) = sess.save() {
+            eprintln!("Warning: Could not save session file: {}", e);
+        }
+
+        eprintln!("Analysis server running at {}", server_info.server_origin);
+        eprintln!("Session file: {:?}", session::Session::session_file_path());
+        eprintln!("");
+        eprintln!("Query endpoints available:");
+        eprintln!("  {}/query/hotspots?limit=20", server_info.token_url);
+        eprintln!("  {}/query/callers?function=NAME&depth=5", server_info.token_url);
+        eprintln!("  {}/query/callees?function=NAME&depth=5", server_info.token_url);
+        eprintln!("  {}/query/summary", server_info.token_url);
+        eprintln!("");
+        eprintln!("Or use the CLI:");
+        eprintln!("  samply query hotspots --limit 20");
+        eprintln!("  samply query callers FUNCTION --depth 5");
+        eprintln!("  samply query callees FUNCTION --depth 5");
+        eprintln!("  samply query summary");
+        eprintln!("");
+        eprintln!("Press Ctrl+C to stop.");
+
+        // Run server until stopped
+        if let Err(e) = server_info.server_join_handle.await {
+            eprintln!("Server error: {}", e);
+        }
+
+        // Clean up session file
+        let _ = session::Session::remove();
+
+        if let Some(quota_manager) = quota_manager {
+            quota_manager.finish().await;
+        }
+    });
+}
+
+fn do_analyze_stop() {
+    let session = match session::Session::load() {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("No active analysis session found: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    // Try to kill the server process
+    #[cfg(unix)]
+    {
+        use std::process::Command;
+        let _ = Command::new("kill")
+            .args([&session.pid.to_string()])
+            .status();
+    }
+
+    #[cfg(windows)]
+    {
+        use std::process::Command;
+        let _ = Command::new("taskkill")
+            .args(["/PID", &session.pid.to_string(), "/F"])
+            .status();
+    }
+
+    // Remove session file
+    if let Err(e) = session::Session::remove() {
+        eprintln!("Warning: Could not remove session file: {}", e);
+    }
+
+    eprintln!("Analysis server stopped.");
+}
+
+// ============================================================================
+// Query command handlers
+// ============================================================================
+
+fn do_query_action(query_args: cli::QueryArgs) {
+    let client = match query_client::QueryClient::from_session() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            eprintln!("Make sure an analysis server is running: samply analyze serve <profile>");
+            std::process::exit(1);
+        }
+    };
+
+    let result = match query_args.command {
+        cli::QueryCommand::Hotspots(args) => {
+            client.query_hotspots(args.limit, args.thread.as_deref())
+        }
+        cli::QueryCommand::Callers(args) => {
+            client.query_callers(&args.function, args.depth)
+        }
+        cli::QueryCommand::Callees(args) => {
+            client.query_callees(&args.function, args.depth)
+        }
+        cli::QueryCommand::Summary => client.query_summary(),
+        cli::QueryCommand::Source(_args) => {
+            eprintln!("Source query not yet implemented");
+            std::process::exit(1);
+        }
+        cli::QueryCommand::Asm(_args) => {
+            eprintln!("Asm query not yet implemented");
+            std::process::exit(1);
+        }
+    };
+
+    match result {
+        Ok(json) => {
+            // Pretty print the JSON
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&json) {
+                println!("{}", serde_json::to_string_pretty(&value).unwrap_or(json));
+            } else {
+                println!("{}", json);
+            }
+        }
+        Err(e) => {
+            eprintln!("Query failed: {}", e);
+            std::process::exit(1);
+        }
+    }
 }

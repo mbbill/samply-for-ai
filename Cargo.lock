@@ -2250,6 +2250,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "uname",
+ "url",
  "uuid",
  "which 8.0.0",
  "wholesym",
