@@ -15,25 +15,101 @@ use super::shared::prop_types::{
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "samply",
+    name = "samply-for-ai",
     version,
-    about = r#"
-samply is a sampling CPU profiler for Windows, macOS, and Linux.
-See "samply record --help" for additional information about the "samply record" command.
+    about = "A CPU sampling profiler designed for AI-driven performance debugging.",
+    after_long_help = r#"
+samply-for-ai is a CPU sampling profiler designed for AI workflow automation.
+It enables AI agents to autonomously identify and fix performance bottlenecks
+through a structured CLI interface that returns machine-readable JSON output.
+
+WHY SAMPLY-FOR-AI?
+  - Structured JSON output: Every query returns parseable JSON, not visual charts
+  - Semantic commands: drilldown, hotspots, callers, callees map to debugging workflows
+  - Bottleneck detection: Automatic identification of where CPU time is spent
+  - Source mapping: Links hot addresses directly to source lines for AI-assisted fixes
+
+IMPORTANT - BACKGROUND RUNNING:
+    'analyze serve' runs a PERSISTENT SERVER that blocks until killed.
+    You MUST run it in the background with '&', or use 'record --serve'.
+
+QUICK START (AI WORKFLOW):
+    # Record and start analysis server (recommended for AI)
+    samply-for-ai record --serve ./my-application
+
+    # OR: Start server for existing profile (MUST use & for background)
+    samply-for-ai analyze serve profile.json --no-open &
+    samply-for-ai query drilldown main --depth 20
+    samply-for-ai analyze stop
+
+TYPICAL AI WORKFLOW:
+    # 1. Find bottleneck (START HERE)
+    samply-for-ai query drilldown main --depth 20
+    # Returns JSON with hot path and bottleneck function
+
+    # 2. Get address-level detail if needed
+    samply-for-ai query asm <bottleneck_function>
+    # Returns hot addresses with source line mapping
+
+    # 3. If stdlib bottleneck (malloc, pthread_wait), drill from higher level
+    samply-for-ai query drilldown "MyApp::process" --depth 10
+
+QUERY COMMANDS:
+    drilldown FUNC   Follow hottest callee path, find bottleneck (START HERE)
+    hotspots         List functions by self-time (often shows stdlib)
+    callers FUNC     Who calls this function?
+    callees FUNC     What does this function call?
+    asm FUNC         Address-level samples with source line mapping
+    summary          Profile overview (duration, threads, total samples)
+
+KEY CONCEPTS:
+    self-time    Time in function itself, not callees
+    total-time   Time in function + all callees
+    bottleneck   High self-time = CPU cycles burned HERE
+    hot path     Call chain consuming most time
+
+OUTPUT FORMAT (all queries return JSON):
+    {
+      "success": true,
+      "query": "drilldown",
+      "data": {
+        "root": "main",
+        "path": [...],
+        "bottleneck": {
+          "function": "parse_json",
+          "file_path": "/src/parser.rs",
+          "line_number": 234,
+          "self_percent": 65.0
+        }
+      }
+    }
+
+DRILLDOWN THRESHOLDS:
+    --threshold 5.0   Default, catches most bottlenecks
+    --threshold 20.0  Only flags significant bottlenecks
+    --threshold 50.0  Only stops at severe bottlenecks
+
+PLATFORM SETUP:
+    Linux:  echo '-1' | sudo tee /proc/sys/kernel/perf_event_paranoid
+    macOS:  samply-for-ai setup
+
+TROUBLESHOOTING:
+    If function names are hex addresses (0x1efcfc), profile isn't symbolicated.
+    Re-record with default settings (presymbolication is on by default).
 
 EXAMPLES:
     # Profile a freshly launched process:
-    samply record ./yourcommand yourargs
+    samply-for-ai record ./yourcommand yourargs
 
     # Profile an existing process by pid:
-    samply record -p 12345
+    samply-for-ai record -p 12345
 
-    # Alternative usage: Save profile to file for later viewing, and then load it.
-    samply record --save-only -o prof.json -- ./yourcommand yourargs
-    samply load prof.json # Opens in the browser and supplies symbols
+    # Save profile to file, then analyze:
+    samply-for-ai record --save-only -o prof.json -- ./yourcommand yourargs
+    samply-for-ai analyze serve prof.json --no-open &
 
     # Import perf.data files from Linux perf or Android simpleperf:
-    samply import perf.data
+    samply-for-ai import perf.data
 "#
 )]
 pub struct Opt {
@@ -49,7 +125,7 @@ pub enum Action {
         target_os = "linux",
         target_os = "windows"
     ))]
-    /// Record a profile and display it.
+    /// Record a profile. Use --serve to start analysis server for AI workflow.
     Record(RecordArgs),
 
     /// Load a profile from a file and display it.
@@ -58,10 +134,12 @@ pub enum Action {
     /// Import a perf.data file and display the profile.
     Import(ImportArgs),
 
-    /// Start or stop the analysis server.
+    /// Start or stop the analysis server for a profile.
+    /// Run 'analyze serve profile.json --no-open &' to start in background.
     Analyze(AnalyzeArgs),
 
-    /// Query the running analysis server (for AI/programmatic access).
+    /// Query the running analysis server. Returns JSON for AI/programmatic access.
+    /// Start with 'query drilldown main' to find bottlenecks.
     Query(QueryArgs),
 
     #[cfg(target_os = "windows")]
@@ -131,22 +209,25 @@ pub struct QueryArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum QueryCommand {
-    /// Get the hottest functions by sample count.
+    /// List functions ranked by self-time (CPU time in function itself).
+    /// Note: Often shows stdlib (malloc, memcpy). Use 'drilldown' to find YOUR bottleneck.
     Hotspots(HotspotsArgs),
 
-    /// Find callers of a function.
+    /// Find callers of a function (who calls this function?).
     Callers(CallersArgs),
 
-    /// Find callees of a function.
+    /// Find callees of a function (what does this function call?).
     Callees(CalleesArgs),
 
-    /// Get a summary of the profile.
+    /// Get profile overview: duration, threads, total samples.
     Summary,
 
-    /// Get assembly for a function.
+    /// Get address-level samples with source line mapping for a function.
+    /// Returns hot_addresses sorted by code order with source_line for each.
     Asm(AsmArgs),
 
-    /// Drilldown from a function following the hottest callee path.
+    /// [START HERE] Follow hottest callee path from a function to find bottleneck.
+    /// Stops when self-time > threshold. Returns is_bottleneck: true at the hot function.
     Drilldown(DrilldownArgs),
 }
 
@@ -759,7 +840,7 @@ pub fn get_query_help() -> String {
     for subcommand in query_cmd.get_subcommands() {
         let name = subcommand.get_name();
         let about = subcommand.get_about().map(|s| s.to_string()).unwrap_or_default();
-        help.push_str(&format!("  samply query {:<12} - {}\n", name, about));
+        help.push_str(&format!("  samply-for-ai query {:<12} - {}\n", name, about));
     }
 
     help
@@ -778,25 +859,25 @@ mod test {
     #[cfg(any(target_os = "android", target_os = "macos", target_os = "linux"))]
     #[test]
     fn verify_cli_record() {
-        let opt = Opt::parse_from(["samply", "record", "rustup", "show"]);
+        let opt = Opt::parse_from(["samply-for-ai", "record", "rustup", "show"]);
         assert!(
             matches!(opt.action, Action::Record(record_args) if record_args.command == ["rustup", "show"])
         );
 
-        let opt = Opt::parse_from(["samply", "record", "rustup", "--no-open"]);
+        let opt = Opt::parse_from(["samply-for-ai", "record", "rustup", "--no-open"]);
         assert!(
         matches!(opt.action, Action::Record(record_args) if record_args.command == ["rustup", "--no-open"]),
-        "Arguments of the form --arg should be considered part of the command even if they match samply options."
+        "Arguments of the form --arg should be considered part of the command even if they match samply-for-ai options."
     );
 
-        let opt = Opt::parse_from(["samply", "record", "--no-open", "rustup"]);
+        let opt = Opt::parse_from(["samply-for-ai", "record", "--no-open", "rustup"]);
         assert!(
             matches!(opt.action, Action::Record(record_args) if record_args.command == ["rustup"] && record_args.server_args.no_open),
-            "Arguments which come before the command name should be treated as samply arguments."
+            "Arguments which come before the command name should be treated as samply-for-ai arguments."
         );
 
         // Make sure you can't pass both a pid and a command name at the same time.
-        let opt_res = Opt::try_parse_from(["samply", "record", "-p", "1234", "rustup"]);
+        let opt_res = Opt::try_parse_from(["samply-for-ai", "record", "-p", "1234", "rustup"]);
         assert!(opt_res.is_err());
     }
 }

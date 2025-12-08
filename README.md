@@ -1,32 +1,53 @@
-# Samply - CPU Profiler with AI CLI
+# samply-for-ai
 
-A sampling CPU profiler with a CLI designed for AI-assisted performance debugging.
+A CPU sampling profiler designed for AI-driven performance debugging. This tool enables AI agents to autonomously identify and fix performance bottlenecks through a structured CLI interface that returns machine-readable JSON output.
+
+## Teaching AI to Use This Tool
+
+1. **Tell AI the tool exists**: "There's a profiling tool called `samply-for-ai` installed on this system for finding performance bottlenecks."
+
+2. **Have AI read the help**: "Run `samply-for-ai --help` to understand how to use it."
+
+3. **Ask AI to debug**: "Profile my program and find the performance bottleneck, then suggest a fix."
+
+That's it. The `--help` output contains everything the AI needs: workflow steps, command reference, key concepts, and JSON output format.
+
+## Why samply-for-ai?
+
+Traditional profilers are built for human interaction through GUIs and visual flame graphs. **samply-for-ai** is purpose-built for AI workflow automation:
+
+- **Structured JSON output** - Every query returns parseable JSON, not visual charts
+- **Semantic commands** - `drilldown`, `hotspots`, `callers`, `callees` map directly to performance debugging workflows
+- **Bottleneck detection** - Automatic identification of where CPU time is actually spent
+- **Source mapping** - Links hot addresses directly to source lines for AI-assisted code fixes
+
+AI agents can record a profile, query for bottlenecks, and propose targeted optimizations—all without human intervention.
 
 ## Quick Start
 
 ```bash
 # Record a profile and start analysis server (--serve for AI/CLI workflow)
-samply record --serve ./my-application my-arguments
+samply-for-ai record --serve ./my-application my-arguments
 # Now run queries directly (server running in foreground, Ctrl+C to stop)
 
 # OR: Traditional workflow (server runs in background)
-samply analyze serve profile.json --no-open &
-samply query drilldown main --depth 20
-samply analyze stop
+samply-for-ai analyze serve profile.json --no-open &
+samply-for-ai query drilldown main --depth 20
+samply-for-ai analyze stop
 ```
 
 ## Recording Profiles
 
 ```bash
 # Record and start analysis server (for AI/CLI workflow)
-samply record --serve ./my-application
-# Server runs in foreground, ready for samply query commands
+samply-for-ai record --serve ./my-application
+# Server runs in foreground, ready for samply-for-ai query commands
 
 # Basic recording (opens Firefox Profiler UI when done, pre-symbolicated by default)
-samply record ./my-application
+samply-for-ai record ./my-application
 
 # Save without opening browser
-samply record -o profile.json --save-only ./my-application
+samply-for-ai record -o profile.json --save-only ./my-application
 
 ```
 
@@ -39,24 +60,26 @@ echo '-1' | sudo tee /proc/sys/kernel/perf_event_paranoid
 
 **macOS** - Self-sign for process attachment:
 ```bash
-samply setup
+samply-for-ai setup
 ```
 
-## AI CLI - Performance Analysis
+## AI Workflow - Performance Analysis
+
+The CLI is optimized for AI agents performing automated performance analysis. All commands return structured JSON that can be parsed and acted upon programmatically.
 
 ### Setup
 
-**IMPORTANT:** `samply analyze serve` runs a persistent server that does NOT exit until killed. You MUST run it in the background, otherwise your terminal will be blocked.
+**IMPORTANT:** `samply-for-ai analyze serve` runs a persistent server that does NOT exit until killed. You MUST run it in the background, otherwise your terminal will be blocked.
 
 ```bash
 # Start analysis server (run in background with &)
-samply analyze serve profile.json --no-open &
+samply-for-ai analyze serve profile.json --no-open &
 
 # Server auto-discovered via ~/.samply/session.json
 # Now run queries...
 
 # Stop when done
-samply analyze stop
+samply-for-ai analyze stop
 ```
 
 ### Commands
@@ -64,7 +87,7 @@ samply analyze stop
 #### drilldown - Find Bottleneck (START HERE)
 
 ```bash
-samply query drilldown FUNCTION [--depth N] [--threshold PCT]
+samply-for-ai query drilldown FUNCTION [--depth N] [--threshold PCT]
 ```
 
 Follows hottest callee path from FUNCTION. Stops when self-time > threshold (bottleneck found).
@@ -81,7 +104,7 @@ Follows hottest callee path from FUNCTION. Stops when self-time > threshold (bot
 - `--threshold 50.0` - Only stops at severe bottlenecks
 
 ```bash
-samply query drilldown main --depth 20
+samply-for-ai query drilldown main --depth 20
 ```
 
 Output marks `is_hottest: true` at each level, `is_bottleneck: true` when found.
@@ -89,7 +112,7 @@ Output marks `is_hottest: true` at each level, `is_bottleneck: true` when found.
 #### hotspots - Functions by Self-Time
 
 ```bash
-samply query hotspots [--limit N] [--thread NAME] [--show-lines] [--show-addresses]
+samply-for-ai query hotspots [--limit N] [--thread NAME] [--show-lines] [--show-addresses]
 ```
 
 **Options:**
@@ -103,8 +126,8 @@ samply query hotspots [--limit N] [--thread NAME] [--show-lines] [--show-address
 #### callers / callees - Call Relationships
 
 ```bash
-samply query callers FUNCTION [--depth N] [--limit N]
-samply query callees FUNCTION [--depth N] [--limit N]
+samply-for-ai query callers FUNCTION [--depth N] [--limit N]
+samply-for-ai query callees FUNCTION [--depth N] [--limit N]
 ```
 
 **Options:**
@@ -114,7 +137,7 @@ samply query callees FUNCTION [--depth N] [--limit N]
 #### asm - Address-Level Samples with Source Mapping
 
 ```bash
-samply query asm FUNCTION
+samply-for-ai query asm FUNCTION
 ```
 
 Returns `hot_addresses` sorted by offset (code order), each with:
@@ -126,23 +149,23 @@ Returns `hot_addresses` sorted by offset (code order), each with:
 #### summary - Profile Overview
 
 ```bash
-samply query summary
+samply-for-ai query summary
 ```
 
-### Workflow
+### Typical AI Workflow
 
 ```bash
 # 1. Find bottleneck
-samply query drilldown main --depth 20
+samply-for-ai query drilldown main --depth 20
 # → Shows: parse_json at line 234 is bottleneck (65% self-time)
 # → drilldown includes hot_lines for the bottleneck function
 
 # 2. If you need address-level detail
-samply query asm parse_json
+samply-for-ai query asm parse_json
 # → Shows hot addresses sorted by code order with source line mapping
 
 # 3. If stdlib bottleneck (malloc, pthread_wait), drill from higher level
-samply query drilldown "MyApp::process" --depth 10
+samply-for-ai query drilldown "MyApp::process" --depth 10
 ```
 
 ## Key Concepts
@@ -156,7 +179,7 @@ samply query drilldown "MyApp::process" --depth 10
 
 ## Output Format
 
-All queries return JSON:
+All queries return JSON for easy parsing by AI agents:
 
 ```json
 {
@@ -219,7 +242,7 @@ With `--show-addresses`: adds `"hot_addresses": [{"offset": 12, "address": "0x12
 
 ```bash
 cargo build --release
-./target/release/samply record ./my-app
+./target/release/samply-for-ai record ./my-app
 ```
 
 ## Troubleshooting
@@ -229,20 +252,20 @@ cargo build --release
 If you see function names like `0x1efcfc` instead of readable names, your profile isn't symbolicated.
 
 **Symptoms:**
-- `samply query hotspots` shows functions like `0x1efcfc`, `0x4ba9dc`
-- `samply query drilldown main` returns empty with "function not found" error
+- `samply-for-ai query hotspots` shows functions like `0x1efcfc`, `0x4ba9dc`
+- `samply-for-ai query drilldown main` returns empty with "function not found" error
 - Server startup shows warning about unsymbolicated profile
 
 **Solutions:**
 1. **Re-record with presymbolication** (enabled by default):
    ```bash
-   samply record ./my-app
+   samply-for-ai record ./my-app
    ```
 
 2. **Symbolicate an existing profile:**
    ```bash
-   samply import --presymbolicate profile.json -o symbolicated.json
-   samply analyze serve symbolicated.json --no-open &
+   samply-for-ai import --presymbolicate profile.json -o symbolicated.json
+   samply-for-ai analyze serve symbolicated.json --no-open &
    ```
 
 ### Function Not Found in Drilldown
