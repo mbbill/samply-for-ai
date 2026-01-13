@@ -240,7 +240,7 @@ impl Sampler {
 }
 
 fn get_macos_name_and_version() -> Option<String> {
-    #[derive(serde_derive::Deserialize)]
+    #[derive(serde::Deserialize)]
     #[serde(rename_all = "PascalCase")]
     struct SystemVersionDict {
         product_name: String,

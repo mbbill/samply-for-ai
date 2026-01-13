@@ -1,7 +1,7 @@
 use std::error::Error;
 use std::path::{Path, PathBuf};
 
-use serde_derive::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 
 use super::utility_process::{
     run_child, UtilityProcess, UtilityProcessChild, UtilityProcessParent, UtilityProcessSession,

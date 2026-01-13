@@ -2289,7 +2289,6 @@ dependencies = [
  "samply-object",
  "samply-quota-manager",
  "serde",
- "serde_derive",
  "serde_json",
  "shlex",
  "sysctl",

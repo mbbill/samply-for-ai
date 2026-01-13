@@ -7,7 +7,7 @@ use std::str::FromStr;
 
 use debugid::DebugId;
 use flate2::bufread::GzDecoder;
-use serde_derive::Deserialize;
+use serde::Deserialize;
 use wholesym::{CodeId, LibraryInfo};
 
 #[derive(Deserialize, Default, Clone, Debug, PartialEq, Eq)]

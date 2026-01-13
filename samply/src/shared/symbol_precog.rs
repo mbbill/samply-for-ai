@@ -3,8 +3,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::{borrow::Cow, fs::File};
 
-use serde::de::{Deserialize, Deserializer};
-use serde_derive::Deserialize;
+use serde::{de::Deserializer, Deserialize};
 use wholesym::{
     FunctionNameIndex, SourceFilePath, SourceFilePathHandle, SourceFilePathIndex,
     SymbolMapGeneration, SymbolNameIndex,
