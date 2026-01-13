@@ -5,7 +5,7 @@ A CPU sampling profiler designed for AI-driven performance debugging. This tool 
 ## Installation
 
 ```bash
-cargo install --git https://github.com/mbbill/samply-for-ai
+cargo install --git https://github.com/mbbill/samply-for-ai samply-for-ai
 ```
 
 ## Teaching AI to Use This Tool
