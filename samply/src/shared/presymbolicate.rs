@@ -106,7 +106,7 @@ pub fn get_presymbolicate_info(
             .map(|(lib_handle, rvas)| {
                 let lib = profile.get_library_info(lib_handle);
                 let lib_info = wholesym::LibraryInfo {
-                    name: Some(lib.debug_name.clone()),
+                    name: Some(lib.name.clone()),
                     path: Some(lib.path.clone()),
                     debug_path: Some(lib.debug_path.clone()),
                     debug_id: Some(lib.debug_id),

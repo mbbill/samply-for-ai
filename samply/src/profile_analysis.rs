@@ -2,11 +2,26 @@
 //!
 //! This module parses Firefox Profiler JSON format and provides analysis capabilities.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
+
+/// Deserialize a Vec where -1 values are treated as None
+fn deserialize_optional_i64_as_u64<'de, D>(deserializer: D) -> Result<Vec<Option<u64>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let values: Vec<Option<i64>> = Vec::deserialize(deserializer)?;
+    Ok(values
+        .into_iter()
+        .map(|v| match v {
+            Some(n) if n >= 0 => Some(n as u64),
+            _ => None,
+        })
+        .collect())
+}
 
 /// Error type for profile analysis operations
 #[derive(Debug)]
@@ -141,7 +156,7 @@ struct RawFrameTable {
     func: Vec<usize>,
     #[serde(default)]
     line: Vec<Option<u32>>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_optional_i64_as_u64")]
     address: Vec<Option<u64>>,
     #[serde(rename = "nativeSymbol", default)]
     native_symbol: Vec<Option<usize>>,
